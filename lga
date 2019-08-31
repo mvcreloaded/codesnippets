@@ -1,0 +1,156 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Text.RegularExpressions;
+using System.Linq;
+
+namespace LogFileAnalytics
+{
+
+    public class ApplicationConfig
+    {
+        public static TimeSpan SessionTimeout = TimeSpan.FromMinutes(10);
+    }
+
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            IDictionary<string, UserEntry> logEntries = new Dictionary<string, UserEntry>();
+            var logFolder = @"C:\Users\ProLogix\Desktop\MalColm\LogFileAnalytics\data\logs";
+            string oldUserId = string.Empty;
+            string currentUserId = string.Empty;
+            var count = 0;
+
+            foreach (var logFile in Directory.GetFiles(logFolder))
+            {
+                count++;
+                using (var sr = new StreamReader(logFile))
+                {
+                    string line;
+                    while((line = sr.ReadLine()) != null)
+                    {
+                        var logEntry = ParseLogLineEntry(line);
+                        if (logEntry != null)
+                        {
+                            currentUserId = logEntry.UserId;
+                            UserEntry user;
+
+                            if (logEntries.ContainsKey(currentUserId))
+                            {
+                                user = logEntries[currentUserId];
+                                user.SetEntry(logEntry, oldUserId == currentUserId);
+                            }
+                            else
+                            {
+                                user = new UserEntry(currentUserId);
+                                user.SetEntry(logEntry, false);
+                                logEntries.Add(user.UserId, user);
+                            }
+
+                            oldUserId = currentUserId;
+                        }
+                    }
+                }
+            }
+
+            Console.WriteLine($"{count} Total unique visitors:" + logEntries.Count);
+
+            var topFive = logEntries.Values.OrderByDescending(m => m.PagesViewed).Take(5);
+            Console.WriteLine("#Id #pages #sess #longest #shortest");
+            foreach(var user in topFive)
+            {
+                Console.WriteLine($"{user.UserId} {user.PagesViewed} {user.Sessions} {user.LongestSession} {user.ShortestSession}");
+            }
+
+            Console.ReadLine();
+        }
+
+        private static LogLineEntry ParseLogLineEntry(string line)
+        {
+            //10.10.6.90 - - 15/Aug/2016:23:59:20 -0500 "GET /ecf8443dc7f/71f27e/b428176/174ef735/1dd4d421 HTTP/1.0" 200 - "-" "-" 7 "10.10.1.231, 10.10.6.90" -
+            var tokens = Regex.Match(line, @".+ \- \- (.+) \-.+ ""[A-Z]{1,} (/.+/.+/.+/.+) HTTP.+. 200.+", RegexOptions.IgnoreCase);
+            if (tokens.Success)
+            {
+                var dateTime = DateTime.ParseExact(tokens.Groups[1].Value, "dd/MMM/yyyy:HH:mm:ss", CultureInfo.InvariantCulture);
+                var url = tokens.Groups[2].Value;
+                var urlSegments = url.Split("/", StringSplitOptions.RemoveEmptyEntries);
+
+                if (urlSegments.Length >= 3)
+                {
+                    var userId = urlSegments[2];
+                    return new LogLineEntry(userId, url, dateTime);
+                }
+                
+            }
+
+            return null;
+        }
+    }
+
+    public class LogLineEntry
+    {
+        public LogLineEntry(string userId, string url, DateTime accessDateTime)
+        {
+            UserId = userId;
+            Url = url;
+            AccessDateTime = accessDateTime;
+        }
+
+        public string Url { get; private set; }
+        public string UserId { get; }
+        public DateTime AccessDateTime { get; }
+    }
+
+    public class UserEntry
+    {
+        private long _numberOfSessions;
+
+
+        public UserEntry(string userId)
+        {
+            UserId = userId;
+        }
+
+        public void SetEntry(LogLineEntry entry, bool isInSession)
+        {
+            PagesViewed++;
+            if(isInSession)
+            {
+                var duration = entry.AccessDateTime - LastAccessed;
+
+                if (_numberOfSessions == 0)
+                {
+                    ShortestSession = duration;
+                }
+            
+                if(duration <= ApplicationConfig.SessionTimeout)
+                {
+                    _numberOfSessions++;
+                }
+
+                if(duration > LongestSession)
+                {
+                    LongestSession = duration;
+                }
+
+                if (duration > TimeSpan.FromMinutes(0)
+                    && duration < ShortestSession)
+                {
+                    ShortestSession = duration;
+                }
+
+            }
+
+            LastAccessed = entry.AccessDateTime;
+        }
+
+        public string UserId { get; }
+        public DateTime LastAccessed { get; private set; }
+        public long Sessions => _numberOfSessions;
+        public long PagesViewed { get; private set; }
+        public TimeSpan LongestSession { get; private set; }
+        public TimeSpan ShortestSession { get; private set; }
+    }
+}
